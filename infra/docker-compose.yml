@@ -1,0 +1,24 @@
+version: "3.8"
+
+services:
+  lavalink:
+    build:
+      context: .
+      dockerfile: Dockerfile.lavalink
+      args:
+        - LAVALINK_VERSION=4.0.7
+    container_name: lavalink
+    restart: unless-stopped
+    environment:
+      - SERVER_PORT=2333
+      - LAVALINK_SERVER_PASSWORD=${LAVALINK_PASSWORD:-youshallnotpass}
+    ports:
+      - "2333:2333"
+    volumes:
+      - ./lavalink/application.yml:/opt/Lavalink/application.yml:ro
+      - lavalink-cache:/opt/Lavalink/.cache
+
+volumes:
+  lavalink-cache:
+
+

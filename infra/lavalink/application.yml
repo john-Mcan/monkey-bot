@@ -1,0 +1,81 @@
+server:
+  port: 2333
+  address: 0.0.0.0
+
+lavalink:
+  server:
+    password: ${LAVALINK_SERVER_PASSWORD:youshallnotpass}
+    sources:
+      # DESHABILITAR YouTube nativo - LavaSrc lo manejará completamente
+      youtube: false
+      bandcamp: false
+      soundcloud: false
+      twitch: false
+      vimeo: false
+      http: true
+      local: false
+    # Configuraciones optimizadas para mejor rendimiento
+    bufferDurationMs: 400
+    frameBufferDurationMs: 5000
+    opusEncodingQuality: 10
+    resamplingQuality: HIGH
+    trackStuckThresholdMs: 10000
+    useSeekGhosting: true
+    playerUpdateInterval: 5  # Más frecuente para mejor sincronización
+    filters:
+      volume: true
+      equalizer: true
+      karaoke: true
+      timescale: true
+      tremolo: true
+      vibrato: true
+      distortion: true
+      rotation: true
+      channelMix: true
+      lowPass: true
+  plugins:
+    # Configuración correcta: AMBOS plugins son necesarios
+    - dependency: com.github.topi314.lavasrc:lavasrc-plugin:4.8.0
+      repository: https://maven.topi.wtf/releases
+    - dependency: dev.lavalink.youtube:youtube-plugin:1.13.5
+      repository: https://maven.lavalink.dev/releases
+
+plugins:
+  lavasrc:
+    providers:
+      - "ytsearch:%ISRC%"
+      - "ytsearch:%QUERY%"  # HABILITADO para búsquedas generales
+    sources:
+      youtube: true  # HABILITADO - LavaSrc manejará YouTube completamente
+      spotify: false
+      applemusic: false
+      deezer: false
+      yandexmusic: false
+      flowerytts: false
+      vkmusic: false
+      tidal: false
+      qobuz: false
+      jiosaavn: false
+    youtube:
+      enabled: true  # HABILITADO
+      allowSearch: true  # HABILITADO
+      allowDirectVideoIds: true  # HABILITADO
+      allowDirectPlaylistIds: true  # HABILITADO
+    ytdlp:
+      enabled: true
+      executable: "/usr/local/bin/yt-dlp"
+  youtube:
+    # Plugin oficial de YouTube - HABILITADO para búsquedas y videos directos
+    enabled: true
+    allowSearch: true  # Habilitar búsquedas en YouTube
+    allowDirectVideoIds: true  # Habilitar videos directos por ID
+    allowDirectPlaylistIds: true  # Habilitar playlists
+
+logging:
+  level:
+    root: INFO
+    lavalink: INFO
+    lavalink.server.io: WARN
+
+
+
