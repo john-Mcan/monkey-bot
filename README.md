@@ -7,10 +7,12 @@ Un bot de Discord que reproduce música desde YouTube usando Lavalink y LavaSrc.
 - 🎵 Reproducción de música desde YouTube
 - 🔍 Búsqueda por texto (`/play nombre de canción`)
 - 🔗 Reproducción directa de URLs de YouTube
+- 📚 Soporte de playlists de YouTube (detecta `list=` y encola todas las pistas)
 - 📊 Comandos de diagnóstico (`/status`, `/nowplaying`)
 - 🎚️ Control de reproducción básico
 - 🔄 Reconexión automática
 - ⚡ API REST directa para máxima confiabilidad
+- ⏭️ Botón "Next" y comando `/next` para saltar a la siguiente canción
 
 ## 🛠️ Requisitos
 
@@ -125,6 +127,7 @@ Slash commands registrados
 | Comando | Descripción | Ejemplo |
 |---------|-------------|---------|
 | `/play` | Reproducir canción | `/play falling in reverse` |
+| `/next` | Saltar a la siguiente canción en cola | `/next` |
 | `/status` | Ver estado del reproductor | `/status` |
 | `/nowplaying` | Ver canción actual | `/nowplaying` |
 
@@ -136,6 +139,12 @@ Slash commands registrados
 
 # URL directa de YouTube
 /play https://www.youtube.com/watch?v=dQw4w9WgXcQ
+
+# Playlist de YouTube (se detecta automáticamente y se encola completa)
+/play https://www.youtube.com/watch?v=jeiHpmP9zeU&list=RDjeiHpmP9zeU&start_radio=1
+
+# Saltar a la siguiente (si hay más en cola)
+/next
 
 # Ver estado
 /status
@@ -166,6 +175,12 @@ El archivo `bot/src/index.ts` contiene la lógica principal del bot.
 #### Configuración de Comandos
 
 Los comandos slash se registran automáticamente al iniciar el bot.
+
+#### Playlists y Cola
+
+- Si envías una URL que contiene el parámetro `list=` (p. ej. `https://www.youtube.com/watch?v=...&list=...`), el bot detecta la playlist y encola todas las pistas.
+- Cuando hay más de una canción en la cola, el bot mostrará un botón **Next** en la respuesta de `/play` para saltar a la siguiente pista.
+- También puedes usar el comando `/next` para saltar sin necesidad del botón.
 
 ## 🛑 Detención
 

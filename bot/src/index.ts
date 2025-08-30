@@ -1,9 +1,10 @@
 import 'dotenv/config';
-import { Client, GatewayIntentBits, Partials, REST, Routes } from 'discord.js';
+import { Client, GatewayIntentBits, Partials, REST, Routes, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import type { Interaction } from 'discord.js';
 import { logger } from './logger.js';
 import type { Player, PlayerUpdate } from 'shoukaku';
 import { createShoukaku } from './shoukaku.js';
+import { attachPlayerAutoNext, enqueueTracks, getQueue, skipCurrent, startIfIdle } from './queue.js';
 
 function getEnv(name: string): string {
   const v = process.env[name];
@@ -48,6 +49,10 @@ async function registerCommands() {
       description: 'Salir del canal de voz',
     },
     {
+      name: 'next',
+      description: 'Saltar a la siguiente canción en cola',
+    },
+    {
       name: 'status',
       description: 'Ver estado del reproductor',
     },
@@ -77,6 +82,21 @@ client.once('ready', async () => {
 });
 
 client.on('interactionCreate', async (interaction: Interaction) => {
+  // Botón "Next"
+  if (interaction.isButton()) {
+    if (interaction.customId === 'mb:next') {
+      if (!interaction.guildId) return;
+      const player = shoukaku.players.get(interaction.guildId);
+      if (!player) return interaction.reply({ content: '❌ No hay reproductor activo.', ephemeral: true });
+      const q = getQueue(interaction.guildId);
+      if (q.tracks.length === 0) return interaction.reply({ content: 'ℹ️ No hay más canciones en cola.', ephemeral: true });
+      await interaction.deferReply({ ephemeral: true });
+      const ok = await skipCurrent(interaction.guildId, player);
+      await interaction.editReply(ok ? '⏭️ Saltando a la siguiente...' : 'ℹ️ No hay siguiente canción.');
+      return;
+    }
+  }
+
   if (!interaction.isChatInputCommand()) return;
   if (interaction.commandName === 'ping') {
     await interaction.reply(`Pong!`);
@@ -129,6 +149,8 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       const node = player.node;
       // Esperar a que se complete el handshake de voz con Discord → Lavalink
       await waitForPlayerConnected(player, 6000);
+      // Adjuntar auto-next si no está
+      attachPlayerAutoNext(interaction.guildId, player);
       
       // Determinar el tipo de búsqueda para LavaSrc
       let search: string;
@@ -141,8 +163,14 @@ client.on('interactionCreate', async (interaction: Interaction) => {
           
           // Manejar diferentes plataformas directamente con LavaSrc
           if (hostname.includes('youtube.com') || hostname.includes('youtu.be')) {
-            // Para URLs de YouTube, usar la URL directa - LavaSrc la manejará
-            search = query;
+            // Si es una playlist o tiene parámetro list=, forzar URL de playlist
+            const listParam = url.searchParams.get('list');
+            if (listParam && !url.pathname.startsWith('/playlist')) {
+              search = `https://www.youtube.com/playlist?list=${listParam}`;
+            } else {
+              // Para URLs de YouTube, usar la URL directa - LavaSrc/Lavalink la manejará
+              search = query;
+            }
           } else if (hostname.includes('spotify.com')) {
             search = query; // LavaSrc puede manejar Spotify si está configurado
           } else {
@@ -215,231 +243,52 @@ client.on('interactionCreate', async (interaction: Interaction) => {
         await interaction.editReply('No se encontraron resultados.');
         return;
       }
-      let track = undefined as any;
-      if (res.loadType === 'track') track = res.data;
-      else if (res.loadType === 'search') track = res.data?.[0];
-      else if (res.loadType === 'playlist') track = res.data.tracks?.[0];
+      // Preparar encolado (soporta playlists)
+      let tracksToQueue: any[] = [];
+      if (res.loadType === 'track' && res.data) tracksToQueue = [res.data];
+      else if (res.loadType === 'search' && Array.isArray(res.data) && res.data[0]) tracksToQueue = [res.data[0]];
+      else if (res.loadType === 'playlist' && Array.isArray((res as any).data?.tracks)) tracksToQueue = (res as any).data.tracks;
 
-      if (!track) {
-        logger.warn({ res }, 'Sin pista seleccionable');
-        await interaction.editReply('No pude seleccionar una pista válida.');
+      if (!tracksToQueue.length) {
+        logger.warn({ res }, 'Sin pista(s) encolables');
+        await interaction.editReply('No pude seleccionar pistas válidas.');
         return;
       }
 
-      logger.info({ 
-        trackTitle: track.info?.title, 
-        trackUri: track.info?.uri,
-        trackLength: track.info?.length,
-        trackEncoded: track.encoded?.substring(0, 50) + '...'
-      }, 'Intentando reproducir pista');
+      const mapped = tracksToQueue.map((t: any) => ({
+        encoded: t.encoded,
+        info: {
+          title: t.info?.title,
+          uri: t.info?.uri,
+          author: t.info?.author,
+          sourceName: t.info?.sourceName,
+          length: t.info?.length,
+        },
+      }));
 
-      try {
-        // Verificar que el player esté conectado antes de reproducir
-        const playerInfo = await player.node.rest.getPlayer(interaction.guildId);
-        logger.info({
-          playerInfo,
-          trackEncodedLength: track.encoded?.length,
-          guildId: interaction.guildId,
-          voiceChannelId: voiceId
-        }, 'Estado del player antes de reproducir');
-        
-        // Asegurarse de que la conexión esté completamente estable
-        if (!playerInfo?.voice || !(playerInfo as any)?.state?.connected) {
-          logger.info('Player no conectado, esperando conexión...');
-          await waitForPlayerConnected(player, 5000);
-        } else {
-          // Pequeña espera para asegurar estabilidad
-          await new Promise((r) => setTimeout(r, 500));
-        }
-        
-        logger.info({ trackEncoded: track.encoded?.substring(0, 50), trackTitle: track.info?.title }, 'Enviando pista para reproducción');
+      const totalAfter = enqueueTracks(interaction.guildId, mapped);
+      await startIfIdle(interaction.guildId, player);
 
-        // Agregar debugging adicional antes de intentar reproducir
-        logger.info({
-          trackEncoded: track.encoded?.substring(0, 100),
-          trackInfo: track.info,
-          playerGuildId: player.guildId,
-          nodeName: player.node.name
-        }, 'Debug info antes de playTrack');
+      const q = getQueue(interaction.guildId);
+      const isPlaylist = tracksToQueue.length > 1 || res.loadType === 'playlist';
+      const first = mapped[0] as typeof mapped[number];
 
-        // SOLUCIÓN DEFINITIVA: API REST DIRECTA DE LAVALINK
-        logger.info('Usando API REST directa de Lavalink...');
-
-        // Obtener información de la sesión actual
-        const sessionId = player.node.sessionId;
-
-        // Obtener información de voz actual del player
-        const currentPlayerInfo = await player.node.rest.getPlayer(interaction.guildId);
-        const voiceInfo = currentPlayerInfo?.voice;
-
-        if (!voiceInfo) {
-          throw new Error('No se pudo obtener información de voz del player');
-        }
-
-        // URL para crear/actualizar player
-        const playerUrl = `http://localhost:2333/v4/sessions/${sessionId}/players/${interaction.guildId}`;
-
-        logger.info({
-          sessionId,
-          voiceInfo,
-          playerUrl,
-          trackEncodedLength: track.encoded?.length
-        }, 'Preparando solicitud a Lavalink API');
-
-        // Crear player y reproducir en un solo paso
-        const createAndPlayResponse = await fetch(playerUrl, {
-          method: 'PATCH',
-          headers: {
-            'Authorization': 'youshallnotpass',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            encodedTrack: track.encoded,  // Usar encodedTrack en lugar de track
-            volume: 100,
-            paused: false,
-            voice: {
-              token: voiceInfo.token,
-              endpoint: voiceInfo.endpoint,
-              sessionId: voiceInfo.sessionId
-            }
-          })
-        });
-
-        if (createAndPlayResponse.ok) {
-          const responseData = await createAndPlayResponse.json();
-          logger.info({ responseData, trackTitle: track.info?.title }, 'Pista enviada exitosamente via API REST directa');
-
-          // Esperar un poco para que Lavalink procese el track
-          await new Promise((r) => setTimeout(r, 2000));
-
-          // Verificar el estado después de enviar el track
-          const updatedPlayerInfo = await player.node.rest.getPlayer(interaction.guildId);
-          logger.info({
-            updatedPlayerInfo,
-            hasTrack: !!updatedPlayerInfo?.track,
-            trackTitle: updatedPlayerInfo?.track?.info?.title
-          }, 'Estado del player después de enviar track via API REST');
-
-          if (!updatedPlayerInfo?.track) {
-            logger.warn('Track no encontrado después de enviar via API REST, intentando reconectar...');
-
-            // Intentar forzar una actualización del player usando encodedTrack
-            const forceUpdateUrl = `http://localhost:2333/v4/sessions/${sessionId}/players/${interaction.guildId}`;
-            const forceResponse = await fetch(forceUpdateUrl, {
-              method: 'PATCH',
-              headers: {
-                'Authorization': 'youshallnotpass',
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({
-                encodedTrack: track.encoded,
-                volume: 100,
-                paused: false,
-                voice: voiceInfo
-              })
-            });
-
-            if (forceResponse.ok) {
-              logger.info('Track reenviado exitosamente después de reconexión');
-            } else {
-              logger.error({ status: forceResponse.status }, 'Error al reenviar track después de reconexión');
-            }
-
-            logger.info('Reintentando envío de track después de reconexión');
-          }
-
-        } else {
-          const errorText = await createAndPlayResponse.text();
-          logger.error({
-            status: createAndPlayResponse.status,
-            errorText,
-            trackEncoded: track.encoded?.substring(0, 50)
-          }, 'Error en API REST directa');
-
-          // MEJOR MANEJO DE ERRORES PARA URLs PROBLEMÁTICAS
-          if (createAndPlayResponse.status === 400) {
-            logger.warn({ errorText }, 'URL rechazada por Lavalink (posiblemente privada o eliminada)');
-
-            // Verificar si es un error de autenticación de YouTube
-            if (errorText.includes('Please sign in') || errorText.includes('sign in')) {
-              await interaction.editReply(`❌ **Esta canción requiere autenticación de YouTube**\n\nEsta canción tiene restricciones de derechos de autor y requiere una cuenta de YouTube para reproducirla.\n\n🔄 **Prueba con otra canción** o **busca una versión alternativa**.\n\n💡 **Ejemplos que funcionan:**\n• \`/play falling in reverse\`\n• \`/play linkin park numb\`\n• \`/play imagine dragons\``);
-            } else {
-              await interaction.editReply(`❌ No se puede reproducir esta URL. Puede estar privada, eliminada o tener restricciones de derechos de autor.\n\nPrueba con otra canción o URL.`);
-            }
-            return;
-          }
-
-          throw new Error(`API REST directa falló: ${createAndPlayResponse.status} - ${errorText}`);
-        }
-        
-      } catch (e) {
-        logger.error({ 
-          error: e, 
-          trackTitle: track.info?.title,
-          playerState: (player as any).state,
-          nodeStats: player.node.stats
-        }, 'Error al intentar reproducir pista');
-        
-        // Intentar reconectar y reproducir de nuevo
-        try {
-          logger.info('Reintentando reproducción tras error...');
-          await new Promise((r) => setTimeout(r, 1500));
-          
-          // Verificar conexión del player nuevamente
-          await waitForPlayerConnected(player, 5000);
-
-          // SEGUNDO INTENTO: API REST DIRECTA CON RECONEXIÓN
-          logger.info('Segundo intento: API REST directa con nueva conexión...');
-
-          // Obtener información de voz actualizada
-          const updatedPlayerInfo = await player.node.rest.getPlayer(interaction.guildId);
-          const updatedVoiceInfo = updatedPlayerInfo?.voice;
-
-          if (!updatedVoiceInfo) {
-            throw new Error('No se pudo obtener información de voz actualizada');
-          }
-
-          const retrySessionId = player.node.sessionId;
-          const retryPlayerUrl = `http://localhost:2333/v4/sessions/${retrySessionId}/players/${interaction.guildId}`;
-
-          // Intentar con la información de voz actualizada
-          const retryResponse = await fetch(retryPlayerUrl, {
-            method: 'PATCH',
-            headers: {
-              'Authorization': 'youshallnotpass',
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              encodedTrack: track.encoded,
-              volume: 100,
-              paused: false,
-              voice: {
-                token: updatedVoiceInfo.token,
-                endpoint: updatedVoiceInfo.endpoint,
-                sessionId: updatedVoiceInfo.sessionId
-              }
-            })
-          });
-
-          if (retryResponse.ok) {
-            const retryResponseData = await retryResponse.json();
-            logger.info({ retryResponseData, trackTitle: track.info?.title }, 'Segundo intento exitoso via API REST directa');
-          } else {
-            const retryErrorText = await retryResponse.text();
-            logger.error({
-              status: retryResponse.status,
-              retryErrorText,
-              trackEncoded: track.encoded?.substring(0, 50)
-            }, 'Error en segundo intento con API REST');
-            throw new Error(`Segundo intento falló: ${retryResponse.status} - ${retryErrorText}`);
-          }
-        } catch (retryError) {
-          logger.error({ retryError }, 'Falló el segundo intento de reproducción');
-          throw retryError;
-        }
+      const components = [] as any[];
+      if (q.tracks.length > 0) {
+        const nextBtn = new ButtonBuilder()
+          .setCustomId('mb:next')
+          .setLabel('Next')
+          .setStyle(ButtonStyle.Primary);
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(nextBtn);
+        components.push(row);
       }
-      
-      await interaction.editReply(`🎵 Reproduciendo: **${track.info?.title || 'Pista desconocida'}**`);
+
+      await interaction.editReply({
+        content: isPlaylist
+          ? `📚 Se agregaron ${mapped.length} canciones a la cola. ▶️ Reproduciendo: **${first?.info?.title || 'Desconocida'}**`
+          : `🎵 En cola: **${first?.info?.title || 'Pista desconocida'}**` ,
+        components,
+      });
     } catch (err) {
       logger.error({ 
         err,
@@ -544,6 +393,18 @@ ${progressBar}
       logger.error({ error }, 'Error obteniendo información de reproducción actual');
       await interaction.editReply('❌ Error al obtener información de la canción actual.');
     }
+  }
+
+  // Comando next
+  if (interaction.commandName === 'next') {
+    if (!interaction.guildId) return interaction.reply({ content: 'Solo en servidores.', ephemeral: true });
+    const player = shoukaku.players.get(interaction.guildId);
+    if (!player) return interaction.reply({ content: '❌ No hay reproductor activo.', ephemeral: true });
+    const q = getQueue(interaction.guildId);
+    if (q.tracks.length === 0) return interaction.reply({ content: 'ℹ️ No hay más canciones en cola.', ephemeral: true });
+    await interaction.deferReply();
+    const ok = await skipCurrent(interaction.guildId, player);
+    await interaction.editReply(ok ? '⏭️ Saltando a la siguiente...' : 'ℹ️ No hay siguiente canción.');
   }
 });
 
