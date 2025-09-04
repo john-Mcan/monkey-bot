@@ -9,7 +9,9 @@ Un bot de Discord que reproduce música desde YouTube usando Lavalink y LavaSrc.
 - 🔗 Reproducción directa de URLs de YouTube
 - 📚 Soporte de playlists de YouTube (detecta `list=` y encola todas las pistas)
 - 📊 Comandos de diagnóstico (`/status`, `/nowplaying`)
-- 🎚️ Control de reproducción básico
+- 🎚️ Controles de reproducción: pause, resume, seek, stop, volume
+- 🔁 Loop (track/queue) y 🔀 Shuffle
+- 🗑️ Remove por índice y vista de `queue`
 - 🔄 Reconexión automática
 - ⚡ API REST directa para máxima confiabilidad
 - ⏭️ Botón "Next" y comando `/next` para saltar a la siguiente canción
@@ -127,6 +129,15 @@ Slash commands registrados
 | Comando | Descripción | Ejemplo |
 |---------|-------------|---------|
 | `/play` | Reproducir canción | `/play falling in reverse` |
+| `/pause` | Pausar reproducción | `/pause` |
+| `/resume` | Reanudar reproducción | `/resume` |
+| `/seek` | Saltar a posición (mm:ss o segundos) | `/seek 1:30` |
+| `/stop` | Detener y limpiar cola | `/stop` |
+| `/volume` | Cambiar volumen (0-150) | `/volume 100` |
+| `/loop` | Cambiar modo loop | `/loop track` |
+| `/shuffle` | Alternar aleatorio | `/shuffle` |
+| `/remove` | Eliminar por índice (desde 1) | `/remove 3` |
+| `/queue` | Mostrar la cola | `/queue` |
 | `/next` | Saltar a la siguiente canción en cola | `/next` |
 | `/status` | Ver estado del reproductor | `/status` |
 | `/nowplaying` | Ver canción actual | `/nowplaying` |
@@ -164,8 +175,23 @@ lavalink:
   server:
     password: youshallnotpass
     sources:
-      youtube: false  # LavaSrc maneja YouTube
+      youtube: false  # LavaSrc/yt-dlp maneja YouTube
       # ... otras fuentes
+#### YouTube restringido (cookies con yt-dlp)
+
+Para reproducir enlaces de YouTube que requieren inicio de sesión, edad o están limitados por región, habilitamos `yt-dlp` con cookies:
+
+1. En tu navegador (perfil con acceso a YouTube), exporta cookies a formato Netscape. Puedes usar la extensión "Get cookies.txt LOCALLY".
+2. Guarda el archivo como `infra/lavalink/cookies/youtube.txt`.
+3. Reinicia el contenedor de Lavalink:
+
+```bash
+cd infra
+docker-compose down && docker-compose up -d
+```
+
+La imagen instala `yt-dlp` y `ffmpeg`, y montamos `cookies/youtube.txt` dentro del contenedor en `/opt/Lavalink/cookies/youtube.txt`. La configuración `plugins.lavasrc.ytdlp.custom*Args` usa ese archivo automáticamente.
+
 ```
 
 ### Bot
@@ -179,6 +205,7 @@ Los comandos slash se registran automáticamente al iniciar el bot.
 #### Playlists y Cola
 
 - Si envías una URL que contiene el parámetro `list=` (p. ej. `https://www.youtube.com/watch?v=...&list=...`), el bot detecta la playlist y encola todas las pistas.
+- Comandos útiles: `loop` (off/track/queue), `shuffle`, `remove`, `queue` y `next`.
 - Cuando hay más de una canción en la cola, el bot mostrará un botón **Next** en la respuesta de `/play` para saltar a la siguiente pista.
 - También puedes usar el comando `/next` para saltar sin necesidad del botón.
 

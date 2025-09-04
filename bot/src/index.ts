@@ -4,7 +4,7 @@ import type { Interaction } from 'discord.js';
 import { logger } from './logger.js';
 import type { Player, PlayerUpdate } from 'shoukaku';
 import { createShoukaku } from './shoukaku.js';
-import { attachPlayerAutoNext, enqueueTracks, getQueue, skipCurrent, startIfIdle } from './queue.js';
+import { attachPlayerAutoNext, enqueueTracks, getQueue, skipCurrent, startIfIdle, setPaused, stopPlayback, seekTo, setVolume, setLoop, toggleShuffle, removeAt, getQueuePreview } from './queue.js';
 
 function getEnv(name: string): string {
   const v = process.env[name];
@@ -43,6 +43,79 @@ async function registerCommands() {
           required: true,
         },
       ],
+    },
+    {
+      name: 'pause',
+      description: 'Pausa la reproducción actual',
+    },
+    {
+      name: 'resume',
+      description: 'Reanuda la reproducción',
+    },
+    {
+      name: 'seek',
+      description: 'Salta a una posición (mm:ss o segundos)',
+      options: [
+        {
+          name: 'pos',
+          description: 'Posición destino (mm:ss o segundos)',
+          type: 3,
+          required: true,
+        },
+      ],
+    },
+    {
+      name: 'stop',
+      description: 'Detiene la reproducción y limpia la cola',
+    },
+    {
+      name: 'volume',
+      description: 'Cambia el volumen (0-150)',
+      options: [
+        {
+          name: 'value',
+          description: 'Volumen 0-150',
+          type: 4, // INTEGER
+          required: true,
+        },
+      ],
+    },
+    {
+      name: 'loop',
+      description: 'Configura el modo de loop',
+      options: [
+        {
+          name: 'mode',
+          description: 'off | track | queue',
+          type: 3,
+          required: true,
+          choices: [
+            { name: 'off', value: 'off' },
+            { name: 'track', value: 'track' },
+            { name: 'queue', value: 'queue' },
+          ],
+        },
+      ],
+    },
+    {
+      name: 'shuffle',
+      description: 'Alterna el modo aleatorio de la cola',
+    },
+    {
+      name: 'remove',
+      description: 'Elimina una canción de la cola por índice (desde 1)',
+      options: [
+        {
+          name: 'index',
+          description: 'Índice de la canción a eliminar (desde 1)',
+          type: 4,
+          required: true,
+        },
+      ],
+    },
+    {
+      name: 'queue',
+      description: 'Muestra la cola de reproducción',
     },
     {
       name: 'leave',
@@ -92,7 +165,16 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       if (q.tracks.length === 0) return interaction.reply({ content: 'ℹ️ No hay más canciones en cola.', ephemeral: true });
       await interaction.deferReply({ ephemeral: true });
       const ok = await skipCurrent(interaction.guildId, player);
-      await interaction.editReply(ok ? '⏭️ Saltando a la siguiente...' : 'ℹ️ No hay siguiente canción.');
+      if (ok) {
+        await interaction.editReply('⏭️ Saltando a la siguiente...');
+        // Desencadenar siguiente explícitamente para evitar esperar evento
+        const q = getQueue(interaction.guildId);
+        if (!q.isProcessing) {
+          await startIfIdle(interaction.guildId, player);
+        }
+      } else {
+        await interaction.editReply('ℹ️ No hay siguiente canción.');
+      }
       return;
     }
   }
@@ -100,6 +182,87 @@ client.on('interactionCreate', async (interaction: Interaction) => {
   if (!interaction.isChatInputCommand()) return;
   if (interaction.commandName === 'ping') {
     await interaction.reply(`Pong!`);
+  }
+  // Controles básicos
+  if (interaction.commandName === 'pause' || interaction.commandName === 'resume') {
+    if (!interaction.guildId) return interaction.reply({ content: 'Solo en servidores.', ephemeral: true });
+    const player = shoukaku.players.get(interaction.guildId);
+    if (!player) return interaction.reply({ content: '❌ No hay reproductor activo.', ephemeral: true });
+    const paused = interaction.commandName === 'pause';
+    await interaction.deferReply({ ephemeral: true });
+    const ok = await setPaused(interaction.guildId, player, paused);
+    await interaction.editReply(ok ? (paused ? '⏸️ Pausado.' : '▶️ Reanudado.') : '❌ No se pudo cambiar el estado.');
+    return;
+  }
+  if (interaction.commandName === 'seek') {
+    if (!interaction.guildId) return interaction.reply({ content: 'Solo en servidores.', ephemeral: true });
+    const player = shoukaku.players.get(interaction.guildId);
+    if (!player) return interaction.reply({ content: '❌ No hay reproductor activo.', ephemeral: true });
+    const raw = interaction.options.get('pos', true).value as string;
+    let ms = 0;
+    if (/^\d{1,2}:\d{2}$/.test(raw)) {
+      const parts = raw.split(':');
+      const minutes = parseInt(parts[0] ?? '0', 10);
+      const seconds = parseInt(parts[1] ?? '0', 10);
+      ms = ((Number.isFinite(minutes) ? minutes : 0) * 60 + (Number.isFinite(seconds) ? seconds : 0)) * 1000;
+    } else if (/^\d+$/.test(raw)) {
+      ms = parseInt(raw, 10) * 1000;
+    } else {
+      return interaction.reply({ content: 'Formato inválido. Usa mm:ss o segundos.', ephemeral: true });
+    }
+    await interaction.deferReply({ ephemeral: true });
+    const ok = await seekTo(interaction.guildId, player, ms);
+    await interaction.editReply(ok ? `⏩ Avanzado a ${raw}.` : '❌ No se pudo hacer seek.');
+    return;
+  }
+  if (interaction.commandName === 'stop') {
+    if (!interaction.guildId) return interaction.reply({ content: 'Solo en servidores.', ephemeral: true });
+    const player = shoukaku.players.get(interaction.guildId);
+    if (!player) return interaction.reply({ content: '❌ No hay reproductor activo.', ephemeral: true });
+    await interaction.deferReply({ ephemeral: true });
+    const ok = await stopPlayback(interaction.guildId, player);
+    await interaction.editReply(ok ? '⏹️ Reproducción detenida y cola limpia.' : '❌ No se pudo detener.');
+    return;
+  }
+  if (interaction.commandName === 'volume') {
+    if (!interaction.guildId) return interaction.reply({ content: 'Solo en servidores.', ephemeral: true });
+    const player = shoukaku.players.get(interaction.guildId);
+    if (!player) return interaction.reply({ content: '❌ No hay reproductor activo.', ephemeral: true });
+    const value = interaction.options.get('value', true).value as number;
+    await interaction.deferReply({ ephemeral: true });
+    const ok = await setVolume(interaction.guildId, player, value);
+    await interaction.editReply(ok ? `🔊 Volumen: ${Math.max(0, Math.min(150, Math.floor(value)))}%` : '❌ No se pudo cambiar el volumen.');
+    return;
+  }
+  if (interaction.commandName === 'loop') {
+    if (!interaction.guildId) return interaction.reply({ content: 'Solo en servidores.', ephemeral: true });
+    const mode = interaction.options.get('mode', true).value as 'off' | 'track' | 'queue';
+    setLoop(interaction.guildId, mode);
+    await interaction.reply({ content: `🔁 Loop: ${mode}`, ephemeral: true });
+    return;
+  }
+  if (interaction.commandName === 'shuffle') {
+    if (!interaction.guildId) return interaction.reply({ content: 'Solo en servidores.', ephemeral: true });
+    const on = toggleShuffle(interaction.guildId);
+    await interaction.reply({ content: on ? '🔀 Shuffle activado.' : '➡️ Shuffle desactivado.', ephemeral: true });
+    return;
+  }
+  if (interaction.commandName === 'remove') {
+    if (!interaction.guildId) return interaction.reply({ content: 'Solo en servidores.', ephemeral: true });
+    const index1 = interaction.options.get('index', true).value as number;
+    const removed = removeAt(interaction.guildId, index1 - 1);
+    await interaction.reply({ content: removed ? `🗑️ Eliminado: ${removed.info?.title || 'Desconocido'}` : '❌ Índice inválido.', ephemeral: true });
+    return;
+  }
+  if (interaction.commandName === 'queue') {
+    if (!interaction.guildId) return interaction.reply({ content: 'Solo en servidores.', ephemeral: true });
+    const q = getQueuePreview(interaction.guildId, 10);
+    const lines = [] as string[];
+    if (q.current) lines.push(`▶️ ${q.current.info?.title || 'Desconocido'} (${q.current.info?.author || ''})`);
+    q.upcoming.forEach((t, i) => lines.push(`${i + 1}. ${t.info?.title || 'Desconocido'} (${t.info?.author || ''})`));
+    const suffix = q.total > q.upcoming.length ? `\n... y ${q.total - q.upcoming.length} más` : '';
+    await interaction.reply({ content: lines.length ? `${lines.join('\n')}${suffix}\nLoop: ${q.loopMode} | Shuffle: ${q.shuffle ? 'on' : 'off'}` : '📭 Cola vacía.' });
+    return;
   }
   if (interaction.commandName === 'leave') {
     if (!interaction.guildId) return interaction.reply({ content: 'Solo en servidores.', ephemeral: true });
@@ -404,7 +567,15 @@ ${progressBar}
     if (q.tracks.length === 0) return interaction.reply({ content: 'ℹ️ No hay más canciones en cola.', ephemeral: true });
     await interaction.deferReply();
     const ok = await skipCurrent(interaction.guildId, player);
-    await interaction.editReply(ok ? '⏭️ Saltando a la siguiente...' : 'ℹ️ No hay siguiente canción.');
+    if (ok) {
+      await interaction.editReply('⏭️ Saltando a la siguiente...');
+      const q = getQueue(interaction.guildId);
+      if (!q.isProcessing) {
+        await startIfIdle(interaction.guildId, player);
+      }
+    } else {
+      await interaction.editReply('ℹ️ No hay siguiente canción.');
+    }
   }
 });
 

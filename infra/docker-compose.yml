@@ -12,11 +12,14 @@ services:
     environment:
       - SERVER_PORT=2333
       - LAVALINK_SERVER_PASSWORD=${LAVALINK_PASSWORD:-youshallnotpass}
+      - LAVALINK_PLUGINS_DIR=/opt/Lavalink/plugins
     ports:
       - "2333:2333"
     volumes:
       - ./lavalink/application.yml:/opt/Lavalink/application.yml:ro
       - lavalink-cache:/opt/Lavalink/.cache
+      # Monta cookies de YouTube para yt-dlp (opcional pero recomendado para videos restringidos)
+      - ./lavalink/cookies:/opt/Lavalink/cookies:ro
 
 volumes:
   lavalink-cache:

@@ -34,11 +34,9 @@ lavalink:
       channelMix: true
       lowPass: true
   plugins:
-    # Configuración correcta: AMBOS plugins son necesarios
+    # Usaremos exclusivamente LavaSrc (yt-dlp) para YouTube por compatibilidad máxima
     - dependency: com.github.topi314.lavasrc:lavasrc-plugin:4.8.0
       repository: https://maven.topi.wtf/releases
-    - dependency: dev.lavalink.youtube:youtube-plugin:1.13.5
-      repository: https://maven.lavalink.dev/releases
 
 plugins:
   lavasrc:
@@ -46,7 +44,8 @@ plugins:
       - "ytsearch:%ISRC%"
       - "ytsearch:%QUERY%"  # HABILITADO para búsquedas generales
     sources:
-      youtube: true  # HABILITADO - LavaSrc manejará YouTube completamente
+      youtube: false # DESHABILITADO - forzar que YouTube lo maneje yt-dlp
+      ytdlp: true    # HABILITADO - Fuente directa con yt-dlp
       spotify: false
       applemusic: false
       deezer: false
@@ -57,25 +56,20 @@ plugins:
       qobuz: false
       jiosaavn: false
     youtube:
-      enabled: true  # HABILITADO
-      allowSearch: true  # HABILITADO
-      allowDirectVideoIds: true  # HABILITADO
-      allowDirectPlaylistIds: true  # HABILITADO
+      countryCode: "US"
+      language: "en"
     ytdlp:
-      enabled: true
-      executable: "/usr/local/bin/yt-dlp"
-  youtube:
-    # Plugin oficial de YouTube - HABILITADO para búsquedas y videos directos
-    enabled: true
-    allowSearch: true  # Habilitar búsquedas en YouTube
-    allowDirectVideoIds: true  # Habilitar videos directos por ID
-    allowDirectPlaylistIds: true  # Habilitar playlists
+      path: "/usr/local/bin/yt-dlp"
+      searchLimit: 10
+      # Usar valores por defecto del plugin (maneja cookies/format internamente)
+  # Nota: No configuramos el plugin oficial de YouTube; evitamos conflictos con yt-dlp
 
 logging:
   level:
     root: INFO
     lavalink: INFO
     lavalink.server.io: WARN
+    com.github.topi314.lavasrc: DEBUG
 
 
 
