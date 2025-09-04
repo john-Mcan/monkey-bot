@@ -1,10 +1,10 @@
 import 'dotenv/config';
-import { Client, GatewayIntentBits, Partials, REST, Routes, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import { Client, GatewayIntentBits, Partials, REST, Routes, ActionRowBuilder, ButtonBuilder, ButtonStyle, TextChannel, EmbedBuilder } from 'discord.js';
 import type { Interaction } from 'discord.js';
 import { logger } from './logger.js';
 import type { Player, PlayerUpdate } from 'shoukaku';
 import { createShoukaku } from './shoukaku.js';
-import { attachPlayerAutoNext, enqueueTracks, getQueue, skipCurrent, startIfIdle, setPaused, stopPlayback, seekTo, setVolume, setLoop, toggleShuffle, removeAt, getQueuePreview } from './queue.js';
+import { attachPlayerAutoNext, enqueueTracks, getQueue, skipCurrent, startIfIdle, setPaused, stopPlayback, seekTo, setVolume, setLoop, toggleShuffle, removeAt, getQueuePreview, initializeAnnouncementFunction } from './queue.js';
 
 function getEnv(name: string): string {
   const v = process.env[name];
@@ -24,6 +24,125 @@ const client = new Client({
 });
 
 const shoukaku = createShoukaku(client);
+
+// Inicializar la función de anuncio en queue.ts para evitar dependencias circulares
+initializeAnnouncementFunction(sendPlayerAnnouncement);
+
+// Función helper para crear botones de acción del player
+export function createPlayerActionButtons(guildId: string, includeNext: boolean = true): ActionRowBuilder<ButtonBuilder>[] {
+  const queue = getQueue(guildId);
+  const player = shoukaku.players.get(guildId);
+  
+  const buttons: ButtonBuilder[] = [];
+
+  // Botón Play/Pause
+  if (player) {
+    const playPauseBtn = new ButtonBuilder()
+      .setCustomId('mb:toggle-pause')
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji('⏯️');
+    buttons.push(playPauseBtn);
+  }
+
+  // Botón Next (solo si hay canciones en cola)
+  if (includeNext && queue.tracks.length > 0) {
+    const nextBtn = new ButtonBuilder()
+      .setCustomId('mb:next')
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji('⏭️');
+    buttons.push(nextBtn);
+  }
+
+  // Botón Stop
+  const stopBtn = new ButtonBuilder()
+    .setCustomId('mb:stop')
+    .setStyle(ButtonStyle.Secondary)
+    .setEmoji('⏹️');
+  buttons.push(stopBtn);
+
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons);
+  return [row];
+}
+
+// Función para enviar anuncios al canal de voz actual
+export async function sendPlayerAnnouncement(
+  guildId: string, 
+  embedData: { title: string; description?: string; fields?: Array<{name: string, value: string, inline?: boolean}> }, 
+  includeNext: boolean = true
+): Promise<void> {
+  try {
+    const player = shoukaku.players.get(guildId);
+    if (!player) return;
+
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) return;
+
+    // Buscar el canal de voz donde está el bot
+    const voiceChannel = guild.channels.cache.find(
+      (channel) => channel.type === 2 && // VoiceChannel
+        channel.members?.has(client.user?.id || '')
+    );
+
+    if (!voiceChannel) return;
+
+    // Buscar un canal de texto asociado o el primer canal de texto disponible
+    let textChannel: TextChannel | null = null;
+    
+    // Intentar encontrar un canal de texto con nombre similar al canal de voz
+    const similarTextChannel = guild.channels.cache.find(
+      (channel) => channel.type === 0 && // TextChannel
+        channel.name.includes(voiceChannel.name)
+    ) as TextChannel;
+
+    if (similarTextChannel) {
+      textChannel = similarTextChannel;
+    } else {
+      // Si no, usar el primer canal de texto donde el bot pueda enviar mensajes
+      textChannel = guild.channels.cache.find(
+        (channel) => channel.type === 0 && // TextChannel
+          channel.permissionsFor(client.user!)?.has('SendMessages')
+      ) as TextChannel;
+    }
+
+    if (textChannel) {
+      const embed = new EmbedBuilder()
+        .setTitle(embedData.title)
+        .setColor(0x7289DA); // Discord blurple color
+
+      // Solo agregar autor si tenemos iconURL
+      const iconURL = client.user?.displayAvatarURL();
+      if (iconURL) {
+        embed.setAuthor({ 
+          name: 'MonkeyBot', 
+          iconURL: iconURL
+        });
+        // Forzar ancho mínimo con un thumbnail
+        embed.setThumbnail(iconURL);
+      } else {
+        embed.setAuthor({ name: 'MonkeyBot' });
+      }
+
+      if (embedData.description) {
+        embed.setDescription(embedData.description);
+      } else if (embedData.fields && embedData.fields.length > 0) {
+        // Agregar espacio entre título y campos
+        embed.setDescription('\u200B');
+      }
+
+      if (embedData.fields && embedData.fields.length > 0) {
+        embed.addFields(embedData.fields);
+      }
+
+      const components = createPlayerActionButtons(guildId, includeNext);
+      await textChannel.send({
+        embeds: [embed],
+        components
+      });
+    }
+  } catch (error) {
+    logger.error({ error, guildId }, 'Error enviando anuncio del player');
+  }
+}
 
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(token);
@@ -155,11 +274,13 @@ client.once('ready', async () => {
 });
 
 client.on('interactionCreate', async (interaction: Interaction) => {
-  // Botón "Next"
+  // Manejo de botones
   if (interaction.isButton()) {
+    if (!interaction.guildId) return;
+    const player = shoukaku.players.get(interaction.guildId);
+    
+    // Botón "Next"
     if (interaction.customId === 'mb:next') {
-      if (!interaction.guildId) return;
-      const player = shoukaku.players.get(interaction.guildId);
       if (!player) return interaction.reply({ content: '❌ No hay reproductor activo.', ephemeral: true });
       const q = getQueue(interaction.guildId);
       if (q.tracks.length === 0) return interaction.reply({ content: 'ℹ️ No hay más canciones en cola.', ephemeral: true });
@@ -175,6 +296,39 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       } else {
         await interaction.editReply('ℹ️ No hay siguiente canción.');
       }
+      return;
+    }
+
+    // Botón Play/Pause Toggle
+    if (interaction.customId === 'mb:toggle-pause') {
+      if (!player) return interaction.reply({ content: '❌ No hay reproductor activo.', ephemeral: true });
+      await interaction.deferReply({ ephemeral: true });
+      
+      try {
+        // Obtener estado actual del player
+        const playerInfo = await player.node.rest.getPlayer(interaction.guildId);
+        const isCurrentlyPaused = playerInfo?.paused || false;
+        const newPausedState = !isCurrentlyPaused;
+        
+        const ok = await setPaused(interaction.guildId, player, newPausedState);
+        if (ok) {
+          await interaction.editReply(newPausedState ? '⏸️ Pausado.' : '▶️ Reanudado.');
+        } else {
+          await interaction.editReply('❌ No se pudo cambiar el estado.');
+        }
+      } catch (e) {
+        logger.error({ e }, 'Error en toggle pause button');
+        await interaction.editReply('❌ Error al cambiar el estado.');
+      }
+      return;
+    }
+
+    // Botón Stop
+    if (interaction.customId === 'mb:stop') {
+      if (!player) return interaction.reply({ content: '❌ No hay reproductor activo.', ephemeral: true });
+      await interaction.deferReply({ ephemeral: true });
+      const ok = await stopPlayback(interaction.guildId, player);
+      await interaction.editReply(ok ? '⏹️ Reproducción detenida y cola limpia.' : '❌ No se pudo detener.');
       return;
     }
   }
@@ -467,20 +621,63 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       const isPlaylist = tracksToQueue.length > 1 || res.loadType === 'playlist';
       const first = mapped[0] as typeof mapped[number];
 
-      const components = [] as any[];
-      if (q.tracks.length > 0) {
-        const nextBtn = new ButtonBuilder()
-          .setCustomId('mb:next')
-          .setLabel('Next')
-          .setStyle(ButtonStyle.Primary);
-        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(nextBtn);
-        components.push(row);
+      // Crear embed mejorado para anunciar canción/playlist agregada
+      let embedData: { title: string; description?: string; fields?: Array<{name: string, value: string, inline?: boolean}> };
+      
+      if (isPlaylist) {
+        // Para playlist, mensaje simple como pidió el usuario
+        embedData = {
+          title: `📚 Playlist agregada - ${mapped.length} canciones añadidas a la cola`
+        };
+      } else {
+        // Para canción individual, mostrar más detalles
+        const queuePosition = q.tracks.length;
+        embedData = {
+          title: `🎵 ${first?.info?.title || 'Pista desconocida'}`,
+          fields: [
+            { name: '👤 Artista', value: first?.info?.author || 'Desconocido', inline: true },
+            { name: '⏱️ Duración', value: first?.info?.length ? formatTime(first.info.length) : 'Desconocida', inline: true }
+          ]
+        };
+        
+        if (queuePosition > 0) {
+          embedData.fields?.push({ name: '📋 Posición en cola', value: `${queuePosition + 1}`, inline: true });
+        }
+      }
+
+      // Crear botones de acción usando la función helper
+      const components = createPlayerActionButtons(interaction.guildId, true);
+
+      const embed = new EmbedBuilder()
+        .setTitle(embedData.title)
+        .setColor(0x7289DA);
+
+      // Solo agregar autor si tenemos iconURL
+      const iconURL = client.user?.displayAvatarURL();
+      if (iconURL) {
+        embed.setAuthor({ 
+          name: 'MonkeyBot', 
+          iconURL: iconURL
+        });
+        // Forzar ancho mínimo con un thumbnail
+        embed.setThumbnail(iconURL);
+      } else {
+        embed.setAuthor({ name: 'MonkeyBot' });
+      }
+
+      if (embedData.description) {
+        embed.setDescription(embedData.description);
+      } else if (embedData.fields && embedData.fields.length > 0) {
+        // Agregar espacio entre título y campos
+        embed.setDescription('\u200B');
+      }
+
+      if (embedData.fields && embedData.fields.length > 0) {
+        embed.addFields(embedData.fields);
       }
 
       await interaction.editReply({
-        content: isPlaylist
-          ? `📚 Se agregaron ${mapped.length} canciones a la cola. ▶️ Reproduciendo: **${first?.info?.title || 'Desconocida'}**`
-          : `🎵 En cola: **${first?.info?.title || 'Pista desconocida'}**` ,
+        embeds: [embed],
         components,
       });
     } catch (err) {

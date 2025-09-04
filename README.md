@@ -4,10 +4,12 @@ Un bot de Discord que reproduce música desde YouTube usando Lavalink y LavaSrc.
 
 ## 📋 Características
 
-- 🎵 Reproducción de música desde YouTube
+- 🎵 Reproducción de música desde YouTube (yt-dlp como nodo primario)
 - 🔍 Búsqueda por texto (`/play nombre de canción`)
 - 🔗 Reproducción directa de URLs de YouTube
 - 📚 Soporte de playlists de YouTube (detecta `list=` y encola todas las pistas)
+- 🔁 Fallback entre nodos: plugin oficial de YouTube como respaldo para playlists/búsqueda
+- 🛡️ Reintentos por pista “difícil”: re-resolución y cambio dinámico de nodo solo para esa pista
 - 📊 Comandos de diagnóstico (`/status`, `/nowplaying`)
 - 🎚️ Controles de reproducción: pause, resume, seek, stop, volume
 - 🔁 Loop (track/queue) y 🔀 Shuffle
@@ -58,6 +60,11 @@ Crea un archivo `.env` en el directorio `bot/`:
 DISCORD_TOKEN=tu_token_de_discord_aqui
 DISCORD_CLIENT_ID=tu_client_id_de_discord
 DISCORD_GUILD_ID=tu_guild_id_para_desarrollo
+# Opcional: configurar nodos si cambias los puertos/hosts
+LAVALINK_HOST=localhost
+LAVALINK_PORT=2333
+LAVALINK_YT_HOST=localhost
+LAVALINK_YT_PORT=2334
 ```
 
 #### Obtener las Credenciales de Discord:
@@ -76,11 +83,12 @@ DISCORD_GUILD_ID=tu_guild_id_para_desarrollo
 # Navegar al directorio de infraestructura
 cd infra
 
-# Iniciar los contenedores
+# Iniciar los contenedores (yt-dlp en 2333 y youtube-plugin en 2334)
 docker-compose up -d
 
-# Verificar que esté funcionando
-docker-compose logs lavalink
+# Verificar que estén funcionando
+docker-compose logs lavalink --tail=20
+docker-compose logs lavalink-youtube --tail=20
 ```
 
 **Espera a que aparezca:**
@@ -94,8 +102,9 @@ Lavalink is ready to accept connections
 # Ver estado de los contenedores
 docker ps
 
-# Ver logs recientes
+# Ver logs recientes (ambos nodos)
 docker-compose logs lavalink --tail=10
+docker-compose logs lavalink-youtube --tail=10
 ```
 
 ### Paso 3: Iniciar el Bot
@@ -175,28 +184,35 @@ lavalink:
   server:
     password: youshallnotpass
     sources:
-      youtube: false  # LavaSrc/yt-dlp maneja YouTube
+      youtube: false  # LavaSrc/yt-dlp maneja YouTube (nodo primario)
       # ... otras fuentes
+```
+
 #### YouTube restringido (cookies con yt-dlp)
 
 Para reproducir enlaces de YouTube que requieren inicio de sesión, edad o están limitados por región, habilitamos `yt-dlp` con cookies:
 
 1. En tu navegador (perfil con acceso a YouTube), exporta cookies a formato Netscape. Puedes usar la extensión "Get cookies.txt LOCALLY".
 2. Guarda el archivo como `infra/lavalink/cookies/youtube.txt`.
-3. Reinicia el contenedor de Lavalink:
+3. Montamos `infra/lavalink/cookies/youtube.txt` dentro del contenedor en `/opt/Lavalink/cookies/youtube.txt` mediante `docker-compose`.
+4. Reinicia los contenedores de Lavalink:
 
 ```bash
 cd infra
 docker-compose down && docker-compose up -d
 ```
 
-La imagen instala `yt-dlp` y `ffmpeg`, y montamos `cookies/youtube.txt` dentro del contenedor en `/opt/Lavalink/cookies/youtube.txt`. La configuración `plugins.lavasrc.ytdlp.custom*Args` usa ese archivo automáticamente.
+La imagen instala `yt-dlp` y `ffmpeg`, y montamos `cookies/youtube.txt` en `/opt/Lavalink/cookies/youtube.txt`. Por estabilidad mantenemos los args por defecto del plugin; si un enlace “difícil” falla, el bot lo reintenta en el otro nodo (plugin oficial). Si necesitas forzar cookies vía yt‑dlp (menos estable), puedes añadir `customLoadArgs/customPlaybackArgs` en `infra/lavalink/application.yml` apuntando a ese archivo.
 
-```
+#### Doble nodo (estado actual)
+
+- `lavalink` (puerto 2333): LavaSrc + yt-dlp, buffers ampliados (`bufferDurationMs=1200`, `frameBufferDurationMs=15000`) y JVM 1GB.
+- `lavalink-youtube` (puerto 2334): plugin oficial de YouTube, adecuado para playlists/búsquedas más suaves.
+- El bot prioriza `yt-dlp` y cae a `youtube-plugin` según el caso; además, por pista fallida cambia de nodo cuando conviene.
 
 ### Bot
 
-El archivo `bot/src/index.ts` contiene la lógica principal del bot.
+El archivo `bot/src/index.ts` contiene la lógica principal del bot y la detección de playlists/fallback entre nodos.
 
 #### Configuración de Comandos
 
@@ -204,10 +220,17 @@ Los comandos slash se registran automáticamente al iniciar el bot.
 
 #### Playlists y Cola
 
-- Si envías una URL que contiene el parámetro `list=` (p. ej. `https://www.youtube.com/watch?v=...&list=...`), el bot detecta la playlist y encola todas las pistas.
+- Si envías una URL que contiene el parámetro `list=` (p. ej. `https://www.youtube.com/watch?v=...&list=...`), el bot detecta la playlist y encola todas las pistas. Para maximizar compatibilidad, intenta resolver primero la playlist con el nodo de plugin oficial; si falla, recurre a estrategias de búsqueda.
 - Comandos útiles: `loop` (off/track/queue), `shuffle`, `remove`, `queue` y `next`.
 - Cuando hay más de una canción en la cola, el bot mostrará un botón **Next** en la respuesta de `/play` para saltar a la siguiente pista.
 - También puedes usar el comando `/next` para saltar sin necesidad del botón.
+
+#### Reintentos por pista “difícil”
+
+- Si una pista dentro de una playlist falla (stuck/exception o no inicia), el bot reintenta así:
+  1) Re-resuelve en el nodo actual.
+  2) Si sigue fallando, intenta resolver en el otro nodo y mueve el player solo para esa pista.
+  3) Si tras 2 intentos no hay éxito, salta a la siguiente pista sin afectar el resto de la cola.
 
 ## 🛑 Detención
 
@@ -265,8 +288,9 @@ npm start
 ### Problema: "Canción no se reproduce"
 
 ```bash
-# Verificar conexión con Lavalink
+# Verificar conexión con Lavalink (ambos nodos)
 curl -H "Authorization: youshallnotpass" http://localhost:2333/version
+curl -H "Authorization: youshallnotpass" http://localhost:2334/version
 
 # Ver estado del player
 /status (en Discord)
@@ -285,6 +309,14 @@ Algunas canciones requieren autenticación de YouTube. El bot detectará automá
 - Canciones con restricciones de derechos de autor
 - Contenido regional
 - Música con gestión de derechos
+
+### Stuttering / microcortes
+
+- Ya aplicamos buffers mayores y aumentamos memoria de la JVM a 1GB.
+- Si persisten cortes:
+  - Verifica red/CPU del host (cable recomendado).
+  - Ajusta `playerUpdateInterval` (7–10) en `application.yml`.
+  - Usa el nodo `lavalink-youtube` para enlaces no restringidos, y deja `yt-dlp` como fallback.
 
 ## 📁 Estructura del Proyecto
 

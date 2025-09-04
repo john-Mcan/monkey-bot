@@ -1,6 +1,23 @@
 import type { Player, PlayerUpdate, Node } from 'shoukaku';
 import { logger } from './logger.js';
 
+// Importar función de anuncio (será importada dinámicamente para evitar dependencias circulares)
+let sendPlayerAnnouncement: ((guildId: string, embedData: { title: string; description?: string; fields?: Array<{name: string, value: string, inline?: boolean}> }, includeNext?: boolean) => Promise<void>) | undefined;
+
+// Función para inicializar la referencia a la función de anuncio
+export function initializeAnnouncementFunction(announcementFn: (guildId: string, embedData: { title: string; description?: string; fields?: Array<{name: string, value: string, inline?: boolean}> }, includeNext?: boolean) => Promise<void>) {
+  sendPlayerAnnouncement = announcementFn;
+}
+
+// Función helper para formatear tiempo
+function formatTime(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+
+  return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+}
+
 export interface QueuedTrackInfo {
   encoded: string;
   info: {
@@ -85,6 +102,16 @@ export async function playNext(guildId: string, player: Player): Promise<void> {
     if (!next) {
       delete q.current;
       logger.info({ guildId }, 'Cola vacía, no hay más canciones');
+      
+      // Anunciar que no hay más canciones en la cola
+      if (sendPlayerAnnouncement) {
+        const embedData = {
+          title: '🔕 Cola finalizada',
+          description: '📋 No hay más canciones en la cola\n✨ ¡Agrega más música con `/play`!'
+        };
+        await sendPlayerAnnouncement(guildId, embedData, false);
+      }
+      
       return;
     }
     q.current = next;
@@ -98,6 +125,30 @@ export async function playNext(guildId: string, player: Player): Promise<void> {
       return;
     }
     logger.info({ title: next.info?.title, uri: next.info?.uri }, 'Reproduciendo siguiente en cola');
+
+    // Anunciar nueva canción que inicia reproducción
+    if (sendPlayerAnnouncement) {
+      const remainingTracks = q.tracks.length;
+      const duration = next.info?.length ? formatTime(next.info.length) : 'Desconocida';
+      
+      const embedData = {
+        title: `🎵 ${next.info?.title || 'Título desconocido'}`,
+        fields: [
+          { name: '👤 Artista', value: next.info?.author || 'Desconocido', inline: true },
+          { name: '⏱️ Duración', value: duration, inline: true }
+        ]
+      };
+      
+      if (remainingTracks > 0) {
+        embedData.fields.push({ 
+          name: '📋 En cola', 
+          value: `${remainingTracks} canción${remainingTracks > 1 ? 'es' : ''}`, 
+          inline: true 
+        });
+      }
+      
+      await sendPlayerAnnouncement(guildId, embedData, remainingTracks > 0);
+    }
   } finally {
     q.isProcessing = false;
   }
