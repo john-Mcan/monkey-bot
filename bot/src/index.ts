@@ -299,6 +299,7 @@ client.on('interactionCreate', async (interaction: Interaction) => {
           shardId: interaction.guild.shardId,
           deaf: true,
         });
+        logger.info({ node: player.node.name }, 'Player creado en nodo');
       } else {
         logger.info('Usando conexión de voz existente...');
         // Verificar que el player esté en el canal correcto
@@ -319,6 +320,7 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       let search: string;
       const isUrl = /^https?:\/\//i.test(query);
       
+      let playlistUrlCandidate: string | undefined;
       if (isUrl) {
         try {
           const url = new URL(query);
@@ -329,7 +331,8 @@ client.on('interactionCreate', async (interaction: Interaction) => {
             // Si es una playlist o tiene parámetro list=, forzar URL de playlist
             const listParam = url.searchParams.get('list');
             if (listParam && !url.pathname.startsWith('/playlist')) {
-              search = `https://www.youtube.com/playlist?list=${listParam}`;
+              playlistUrlCandidate = `https://www.youtube.com/playlist?list=${listParam}`;
+              search = playlistUrlCandidate;
             } else {
               // Para URLs de YouTube, usar la URL directa - LavaSrc/Lavalink la manejará
               search = query;
@@ -376,10 +379,25 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       if (!res || res.loadType === 'empty' || res.loadType === 'error') {
         logger.warn({ original: search, loadType: res?.loadType, error: res?.data }, 'Búsqueda inicial falló, intentando fallbacks');
 
-        // PRIMER FALLBACK: Intentar con ytsearch directo
-        const fallback1 = `ytsearch:${query}`;
-        logger.info({ fallback1 }, 'Intentando primer fallback');
-        res = await node.rest.resolve(fallback1);
+        // PRIORIDAD PLAYLIST: si detectamos lista, intentar en nodo fallback (plugin oficial) antes de degradar a búsquedas
+        if (playlistUrlCandidate && shoukaku.nodes.size > 1) {
+          const fallbackNode = Array.from(shoukaku.nodes.values()).find(n => n.name === 'yt-plugin');
+          if (fallbackNode) {
+            logger.info({ node: fallbackNode.name, playlistUrlCandidate }, 'Intentando resolver playlist en nodo fallback primero');
+            try {
+              res = await fallbackNode.rest.resolve(playlistUrlCandidate);
+            } catch (e) {
+              logger.warn({ e }, 'Fallo resolviendo playlist en nodo fallback');
+            }
+          }
+        }
+
+        // Si aún no hay resultados, intentar con ytsearch directo
+        if (!res || res.loadType === 'empty' || res.loadType === 'error') {
+          const fallback1 = `ytsearch:${query}`;
+          logger.info({ fallback1 }, 'Intentando primer fallback');
+          res = await node.rest.resolve(fallback1);
+        }
 
         // SEGUNDO FALLBACK: Si es URL, extraer ID de YouTube
         if ((!res || res.loadType === 'empty' || res.loadType === 'error') && isUrl) {
@@ -398,6 +416,19 @@ client.on('interactionCreate', async (interaction: Interaction) => {
             const fallback3 = `ytsearch:${ytIdMatch[1]}`;
             logger.info({ fallback3 }, 'Intentando tercer fallback con ytsearch:ID');
             res = await node.rest.resolve(fallback3);
+          }
+        }
+
+        // ÚLTIMO FALLBACK: si seguimos sin resultados, probar en el nodo fallback (plugin oficial)
+        if ((!res || res.loadType === 'empty' || res.loadType === 'error') && shoukaku.nodes.size > 1) {
+          const fallbackNode = Array.from(shoukaku.nodes.values()).find(n => n.name === 'yt-plugin');
+          if (fallbackNode) {
+            logger.info({ node: fallbackNode.name }, 'Intentando resolver en nodo fallback');
+            try {
+              res = await fallbackNode.rest.resolve(search);
+            } catch (e) {
+              logger.warn({ e }, 'Fallo resolviendo en nodo fallback');
+            }
           }
         }
       }

@@ -15,13 +15,13 @@ lavalink:
       http: true
       local: false
     # Configuraciones optimizadas para mejor rendimiento
-    bufferDurationMs: 400
-    frameBufferDurationMs: 5000
+    bufferDurationMs: 1200
+    frameBufferDurationMs: 15000
     opusEncodingQuality: 10
     resamplingQuality: HIGH
     trackStuckThresholdMs: 10000
     useSeekGhosting: true
-    playerUpdateInterval: 5  # Más frecuente para mejor sincronización
+    playerUpdateInterval: 7  # Más frecuente para mejor sincronización
     filters:
       volume: true
       equalizer: true
@@ -61,7 +61,7 @@ plugins:
     ytdlp:
       path: "/usr/local/bin/yt-dlp"
       searchLimit: 10
-      # Usar valores por defecto del plugin (maneja cookies/format internamente)
+      # Usar valores por defecto del plugin (más compatibles)
   # Nota: No configuramos el plugin oficial de YouTube; evitamos conflictos con yt-dlp
 
 logging:

@@ -1,4 +1,4 @@
-import type { Player, PlayerUpdate } from 'shoukaku';
+import type { Player, PlayerUpdate, Node } from 'shoukaku';
 import { logger } from './logger.js';
 
 export interface QueuedTrackInfo {
@@ -61,11 +61,7 @@ export async function skipCurrent(guildId: string, player: Player): Promise<bool
   try {
     // limpiar current inmediatamente para evitar condición de carrera con el evento 'end'
     delete q.current;
-    const res = await patchPlayer(player, guildId, { encodedTrack: null });
-    if (!res.ok) {
-      const txt = await res.text();
-      logger.warn({ status: res.status, txt }, 'Fallo al parar track actual');
-    }
+    await player.stopTrack();
   } catch (e) {
     logger.warn({ e }, 'Error al parar track actual (skip)');
   }
@@ -95,9 +91,7 @@ export async function playNext(guildId: string, player: Player): Promise<void> {
     await ensurePlayerConnected(player, 6000);
 
     const playerInfo = await player.node.rest.getPlayer(guildId);
-    const voice = playerInfo?.voice;
-    if (!voice) throw new Error('No voice info al reproducir siguiente');
-    const played = await attemptPlayEncoded(guildId, player, next, voice, playerInfo?.volume ?? 100);
+    const played = await attemptPlayEncoded(guildId, player, next, playerInfo?.volume ?? 100);
     if (!played) {
       // intentar re-resolver y reintentar
       await retryOrSkipCurrent(guildId, player, 'patch_failed');
@@ -164,25 +158,10 @@ async function attemptPlayEncoded(
   guildId: string,
   player: Player,
   track: QueuedTrackInfo,
-  voice: { token: string; endpoint: string; sessionId: string },
   volume: number
 ): Promise<boolean> {
   try {
-    const res = await patchPlayer(player, guildId, {
-      encodedTrack: track.encoded,
-      volume,
-      paused: false,
-      voice: {
-        token: voice.token,
-        endpoint: voice.endpoint,
-        sessionId: voice.sessionId,
-      },
-    });
-    if (!res.ok) {
-      const txt = await res.text();
-      logger.warn({ status: res.status, txt, title: track.info?.title, uri: track.info?.uri }, 'No se pudo iniciar reproducción con encoded actual');
-      return false;
-    }
+    await player.playTrack({ track: { encoded: track.encoded }, volume, paused: false });
     return true;
   } catch (e) {
     logger.warn({ e, title: track.info?.title, uri: track.info?.uri }, 'Excepción al intentar iniciar reproducción');
@@ -196,7 +175,7 @@ function extractYouTubeId(uri?: string): string | undefined {
   return m?.[1];
 }
 
-async function resolveReplacementTrack(player: Player, t: QueuedTrackInfo): Promise<QueuedTrackInfo | undefined> {
+async function resolveReplacementTrackOnNode(node: Node, t: QueuedTrackInfo): Promise<QueuedTrackInfo | undefined> {
   try {
     const id = extractYouTubeId(t.info?.uri);
     const queries: string[] = [];
@@ -210,7 +189,7 @@ async function resolveReplacementTrack(player: Player, t: QueuedTrackInfo): Prom
     if (title) queries.push(`ytsearch:${title}`);
 
     for (const q of queries) {
-      const res = await player.node.rest.resolve(q);
+      const res = await node.rest.resolve(q);
       if (!res) continue;
       if (res.loadType === 'track' && res.data) {
         const nt = res.data as any;
@@ -253,10 +232,27 @@ async function retryOrSkipCurrent(guildId: string, player: Player, reason: strin
 
     await ensurePlayerConnected(player, 6000);
     const playerInfo = await player.node.rest.getPlayer(guildId);
-    const voice = playerInfo?.voice;
-    if (!voice) throw new Error('No voice info al reintentar');
-
-    const replacement = await resolveReplacementTrack(player, current);
+    // Re-resolver en nodo actual
+    let replacement = await resolveReplacementTrackOnNode(player.node, current);
+    // Si falla, intentar en el nodo alterno y mover el player
+    if (!replacement) {
+      const nodes = player.node.manager.nodes;
+      const currentName = player.node.name;
+      const altName = currentName === 'yt-dlp' ? 'yt-plugin' : 'yt-dlp';
+      const altNode = nodes.get(altName as any);
+      if (altNode) {
+        logger.info({ altNode: altName }, 'Intentando resolver en nodo alterno para pista difícil');
+        replacement = await resolveReplacementTrackOnNode(altNode, current);
+        if (replacement) {
+          try {
+            const moved = await player.move(altName);
+            logger.info({ moved, to: altName }, 'Moviendo player a nodo alterno');
+          } catch (e) {
+            logger.warn({ e }, 'No se pudo mover el player al nodo alterno');
+          }
+        }
+      }
+    }
     if (!replacement) {
       logger.warn({ title: current.info?.title }, 'No se pudo encontrar reemplazo para el track, avanzando');
       delete q.current;
@@ -268,7 +264,7 @@ async function retryOrSkipCurrent(guildId: string, player: Player, reason: strin
     current.encoded = replacement.encoded;
     current.info = replacement.info || current.info;
 
-    const played = await attemptPlayEncoded(guildId, player, current, voice, playerInfo?.volume ?? 100);
+    const played = await attemptPlayEncoded(guildId, player, current, playerInfo?.volume ?? 100);
     if (!played) {
       // Si sigue fallando, intentar inmediatamente siguiente
       logger.warn({ title: current.info?.title }, 'Reintento fallido, avanzando a siguiente');
@@ -321,23 +317,12 @@ async function ensurePlayerConnected(player: Player, timeoutMs: number) {
   });
 }
 
-async function patchPlayer(player: Player, guildId: string, body: Record<string, unknown>) {
-  const sessionId = player.node.sessionId;
-  const url = `http://localhost:2333/v4/sessions/${sessionId}/players/${guildId}`;
-  return fetch(url, {
-    method: 'PATCH',
-    headers: {
-      'Authorization': 'youshallnotpass',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-}
+// Eliminado patchPlayer HTTP directo para soportar múltiples nodos correctamente.
 
 export async function setPaused(guildId: string, player: Player, paused: boolean): Promise<boolean> {
   try {
-    const res = await patchPlayer(player, guildId, { paused });
-    return res.ok;
+    await player.setPaused(paused);
+    return true;
   } catch (e) {
     logger.error({ e }, 'Error al pausar/reanudar');
     return false;
@@ -349,8 +334,8 @@ export async function stopPlayback(guildId: string, player: Player): Promise<boo
     const q = getQueue(guildId);
     q.tracks = [];
     delete q.current;
-    const res = await patchPlayer(player, guildId, { encodedTrack: null });
-    return res.ok;
+    await player.stopTrack();
+    return true;
   } catch (e) {
     logger.error({ e }, 'Error al detener reproducción');
     return false;
@@ -359,8 +344,8 @@ export async function stopPlayback(guildId: string, player: Player): Promise<boo
 
 export async function seekTo(guildId: string, player: Player, positionMs: number): Promise<boolean> {
   try {
-    const res = await patchPlayer(player, guildId, { position: Math.max(0, Math.floor(positionMs)) });
-    return res.ok;
+    await player.seekTo(Math.max(0, Math.floor(positionMs)));
+    return true;
   } catch (e) {
     logger.error({ e }, 'Error al hacer seek');
     return false;
@@ -370,8 +355,8 @@ export async function seekTo(guildId: string, player: Player, positionMs: number
 export async function setVolume(guildId: string, player: Player, volume: number): Promise<boolean> {
   try {
     const vol = Math.max(0, Math.min(150, Math.floor(volume)));
-    const res = await patchPlayer(player, guildId, { volume: vol });
-    return res.ok;
+    await player.update({ volume: vol });
+    return true;
   } catch (e) {
     logger.error({ e }, 'Error al cambiar volumen');
     return false;

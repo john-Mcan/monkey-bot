@@ -29,7 +29,7 @@ COPY lavalink/application.yml /opt/Lavalink/application.yml
 
 EXPOSE 2333
 
-ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC -XX:+ZGenerational"
+ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC -XX:+ZGenerational -Xms256m -Xmx1024m"
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD curl -fsSL http://localhost:2333/version || exit 1
 

@@ -1,0 +1,43 @@
+server:
+  port: 2333
+  address: 0.0.0.0
+
+lavalink:
+  server:
+    password: ${LAVALINK_SERVER_PASSWORD:youshallnotpass}
+    sources:
+      youtube: false
+      bandcamp: false
+      soundcloud: false
+      twitch: false
+      vimeo: false
+      http: true
+      local: false
+    bufferDurationMs: 1200
+    frameBufferDurationMs: 15000
+    opusEncodingQuality: 10
+    resamplingQuality: HIGH
+    trackStuckThresholdMs: 10000
+    useSeekGhosting: true
+    playerUpdateInterval: 7
+    filters:
+      volume: true
+      equalizer: true
+      karaoke: true
+      timescale: true
+      tremolo: true
+      vibrato: true
+      distortion: true
+      rotation: true
+      channelMix: true
+      lowPass: true
+  plugins:
+    - dependency: dev.lavalink.youtube:youtube-plugin:1.13.5
+      repository: https://maven.lavalink.dev/releases
+
+logging:
+  level:
+    root: INFO
+    lavalink: INFO
+    lavalink.server.io: WARN
+

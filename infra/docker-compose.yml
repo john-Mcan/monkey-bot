@@ -21,7 +21,26 @@ services:
       # Monta cookies de YouTube para yt-dlp (opcional pero recomendado para videos restringidos)
       - ./lavalink/cookies:/opt/Lavalink/cookies:ro
 
+  lavalink-youtube:
+    build:
+      context: .
+      dockerfile: Dockerfile.lavalink
+      args:
+        - LAVALINK_VERSION=4.0.7
+    container_name: lavalink-youtube
+    restart: unless-stopped
+    environment:
+      - SERVER_PORT=2334
+      - LAVALINK_SERVER_PASSWORD=${LAVALINK_PASSWORD:-youshallnotpass}
+      - LAVALINK_PLUGINS_DIR=/opt/Lavalink/plugins
+    ports:
+      - "2334:2334"
+    volumes:
+      - ./lavalink/application.youtube.yml:/opt/Lavalink/application.yml:ro
+      - lavalink-cache-yt:/opt/Lavalink/.cache
+
 volumes:
   lavalink-cache:
+  lavalink-cache-yt:
 
 
