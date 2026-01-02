@@ -1,98 +1,10 @@
-# Dependencias de Node.js
-node_modules/
+node_modules*
+dist
+.env
+.env.*
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
 
-# Build y distribución
-bot/dist/
-bot/*.log
 
-# Variables de entorno (credenciales sensibles)
-.env
-.env.local
-.env.production
-.env.staging
-
-# Archivos temporales
-*.tmp
-*.temp
-.cache/
-.tmp/
-
-# Logs
-logs/
-*.log
-
-# IDE y editores
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Sistema operativo
-.DS_Store
-Thumbs.db
-
-# Docker (opcional, si no quieres subir imágenes)
-# docker-compose.override.yml
-
-# Archivos de configuración local
-config.local.json
-config.local.yml
-
-# Archivos de desarrollo
-.nyc_output/
-coverage/
-
-# Runtime data
-pids
-*.pid
-*.seed
-*.pid.lock
-
-# Coverage directory used by tools like istanbul
-coverage/
-
-# nyc test coverage
-.nyc_output/
-
-# Dependency directories
-jspm_packages/
-
-# Optional npm cache directory
-.npm
-
-# Optional REPL history
-.node_repl_history
-
-# Output of 'npm pack'
-*.tgz
-
-# Yarn Integrity file
-.yarn-integrity
-
-# dotenv environment variables file
-.env
-
-# parcel-bundler cache (https://parceljs.org/)
-.parcel-cache
-
-# next.js build output
-.next
-
-# nuxt.js build output
-.nuxt
-
-# vuepress build output
-.vuepress/dist
-
-# Serverless directories
-.serverless
-
-# FuseBox cache
-.fusebox/
-
-# DynamoDB Local files
-.dynamodb/
